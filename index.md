@@ -85,12 +85,16 @@ void GetInternalBinding(const FunctionCallbackInfo<Value>& args) {
 
   CHECK(args[0]->IsString());
 
+  // 模块名称
   Local<String> module = args[0].As<String>();
+
+  // 转到 UTF-8 String
   node::Utf8Value module_v(env->isolate(), module);
   Local<Object> exports;
 
   node_module* mod = get_internal_module(*module_v);
   if (mod != nullptr) {
+    // 能找到内部的 module
     exports = InitModule(env, mod, module);
   } else if (!strcmp(*module_v, "constants")) {
     exports = Object::New(env->isolate());
@@ -249,3 +253,94 @@ Module._extensions['.js'] = function(module, filename) {
 ```
 
 而 `_compiler` 则做了一通检查，然后调用 [`vm.runInThisContext`](https://nodejs.org/dist/latest-v12.x/docs/api/vm.html)，本文不阐述非 module 部分
+
+我们来看 `.mjs` 是如何处理的，首先，moduleJS与commonJS最大的区别就是
+
+mjs是**静态加载模块**
+
+如何理解呢？
+
+```js
+// index.mjs
+console.log('this is main script')
+
+import { foo } from './module/index.mjs'
+
+console.log(foo)
+```
+
+```js
+// module/index.mjs
+export let foo = 1
+
+console.log('this is module')
+```
+
+然后我们运行 `node.js` 的实验功能
+
+```bash
+> node --experimental-modules ./src/index.mjs
+(node:9932) ExperimentalWarning: The ESM module loader is experimental.
+this is module
+this is main script
+1
+```
+
+如果我们用相同的代码，用commonJS编写
+
+```js
+console.log('this is main script')
+
+const { foo } = require('./module')
+
+console.log(foo)
+```
+
+```js
+exports.foo = 1
+
+console.log('this is module')
+```
+
+```bash
+> node ./src/index.js
+this is main script
+this is module
+1
+```
+
+mjs的处理方式与cjs方式不同，在 `lib/internal/modules/esm` 文件夹中未另一套方案
+
+目前，`node.js` 目测是模拟了一套esm的静态加载流程
+
+启动脚本为：
+
+```js
+'use strict';
+
+const {
+  prepareMainThreadExecution
+} = require('internal/bootstrap/pre_execution');
+
+prepareMainThreadExecution(true);
+
+const CJSModule = require('internal/modules/cjs/loader').Module;
+
+markBootstrapComplete();
+
+// Note: this loads the module through the ESM loader if
+// --experimental-loader is provided or --experimental-modules is on
+// and the module is determined to be an ES module
+CJSModule.runMain(process.argv[1]);
+```
+
+```js
+async import(specifier, parent) {
+    const job = await this.getModuleJob(specifier, parent);
+    const { module } = await job.run();
+    return module.getNamespace();
+}
+```
+
+其中，也有缓存机制
+

@@ -1,0 +1,8 @@
+{
+  "name": "example-04",
+  "version": "0.1.0",
+  "main": "src/index.cjs",
+  "license": "MIT",
+  "private": true,
+  "type": "moudle"
+}
