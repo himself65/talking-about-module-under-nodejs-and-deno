@@ -1,6 +1,10 @@
 # 浅谈Node.js 下的 Module loader
 
+## 前言
+
 题目的 idea 来自 [这个问题](https://www.zhihu.com/question/349550048/answer/864295558)
+
+## Node.js 下的 Module Loader
 
 在 Node.js 中，每个文件都视作一个单独的模块，所以我们可以这么写
 
@@ -344,3 +348,212 @@ async import(specifier, parent) {
 
 其中，也有缓存机制
 
+```js
+// Tracks the state of the loader-level module cache
+class ModuleMap extends SafeMap {
+  get(url) {
+    validateString(url, 'url');
+    return super.get(url);
+  }
+  set(url, job) {
+    validateString(url, 'url');
+    if (job instanceof ModuleJob !== true &&
+        typeof job !== 'function') {
+      throw new ERR_INVALID_ARG_TYPE('job', 'ModuleJob', job);
+    }
+    debug(`Storing ${url} in ModuleMap`);
+    return super.set(url, job);
+  }
+  has(url) {
+    validateString(url, 'url');
+    return super.has(url);
+  }
+}
+```
+
+其中 `SafeMap`，就是一个普通的 `Map`，node.js为了防止global变量被修改，所有东西都经过二次封装
+
+```js
+// lib/internal/per_context/primordials.js
+primordials.SafeMap = makeSafe(
+  Map,
+  class SafeMap extends Map {}
+);
+```
+
+---
+
+## Deno 下的 Module Loader
+
+`Deno` 中有一个非常重要的地方，就是权限（Permisson）
+
+我们控制台输入 `deno --help`，可以看到权限选项
+
+```bash
+    -A, --allow-all
+            Allow all permissions
+
+        --allow-env
+            Allow environment access
+
+        --allow-hrtime
+            Allow high resolution time measurement
+
+        --allow-net=<allow-net>
+            Allow network access
+
+        --allow-read=<allow-read>
+            Allow file system read access
+
+        --allow-run
+            Allow running subprocesses
+
+        --allow-write=<allow-write>
+            Allow file system write access
+```
+
+那么，权限是如何实现的呢？我们找了半天，一路向下看到这个地方
+
+```ts
+// cli/js/util.ts
+export function createResolvable<T>(): Resolvable<T> {
+  let methods: ResolvableMethods<T>;
+  const promise = new Promise<T>(
+    (resolve, reject): void => {
+      methods = { resolve, reject };
+    }
+  );
+  // TypeScript doesn't know that the Promise callback occurs synchronously
+  // therefore use of not null assertion (`!`)
+  return Object.assign(promise, methods!) as Resolvable<T>;
+}
+
+// cli/js/dispatch_json.ts
+export async function sendAsync(
+  opId: number,
+  args: object = {},
+  zeroCopy?: Uint8Array
+): Promise<Ok> {
+  const promiseId = nextPromiseId();
+  args = Object.assign(args, { promiseId });
+  const promise = util.createResolvable<Ok>();
+
+  const argsUi8 = encode(args);
+  const buf = core.dispatch(opId, argsUi8, zeroCopy);
+  if (buf) {
+    // Sync result.
+    const res = decode(buf);
+    promise.resolve(res);
+  } else {
+    // Async result.
+    promiseTable.set(promiseId, promise);
+  }
+
+  const res = await promise;
+  return unwrapResponse(res);
+}
+```
+
+`core.dispatch` 提供了一个native函数调用方法，ry曾说过设计 `node.js` 最大失误就是把各种方法直接绑定到 `v8` 中。
+
+```ts
+const buf = core.dispatch(opId, argsUi8, zeroCopy);
+```
+
+但是，在 `deno` 中，各种 `native` 方法都绑定到了 `deno.isolate` 中
+
+```rust
+// core/core/isolate.rs
+/// Defines the how Deno.core.dispatch() acts.
+/// Called whenever Deno.core.dispatch() is called in JavaScript. zero_copy_buf
+/// corresponds to the second argument of Deno.core.dispatch().
+///
+/// Requires runtime to explicitly ask for op ids before using any of the ops.
+pub fn register_op<F>(&mut self, name: &str, op: F) -> OpId
+where
+  F: Fn(&[u8], Option<PinnedBuf>) -> CoreOp + Send + Sync + 'static,
+{
+  self.op_registry.register(name, op)
+}
+```
+
+```rust
+// core/core/ops.rs
+/// This function returns None only if op with given id doesn't exist in registry.
+pub fn call(
+  &self,
+  op_id: OpId,
+  control: &[u8],
+  zero_copy_buf: Option<PinnedBuf>,
+) -> Option<CoreOp> {
+  // Op with id 0 has special meaning - it's a special op that is always
+  // provided to retrieve op id map. The map consists of name to `OpId`
+  // mappings.
+  if op_id == 0 {
+    return Some(Op::Sync(self.json_map()));
+  }
+
+  let d = match self.dispatchers.get(op_id as usize) {
+    Some(handler) => &*handler,
+    None => return None,
+  };
+
+  Some(d(control, zero_copy_buf))
+}
+```
+
+回到正题，我们来看 Module Loader 部分
+
+试着写一个错误代码然后看一下栈信息
+
+```ts
+// examples/05/deno.ts
+// import了一个不存在的东西
+import * as Foo from 'https://himself65.com/foo.ts'
+```
+
+```bash
+> deno examples/05/deno.ts
+Compile file:///C:/Users/76128/Desktop/article/examples/05/deno.ts
+Download https://himself65.com/foo.ts
+error: Uncaught HttpOther: https://himself65.com/foo.ts: error trying to connect: 不知道这样的主机。 (os error 11001)
+► $deno$/dispatch_json.ts:40:11
+    at DenoError ($deno$/errors.ts:20:5)
+    at unwrapResponse ($deno$/dispatch_json.ts:40:11)
+    at sendAsync ($deno$/dispatch_json.ts:91:10)
+```
+
+我们可以看见，import 一个外网URL 其实也是通过了 `dispatch`
+
+并通过 `fetch` 函数来进行下载远程 module
+
+```ts
+/** Fetch a resource from the network. */
+export async function fetch(
+  input: domTypes.Request | string,
+  init?: domTypes.RequestInit
+): Promise<Response> {
+  // ...
+}
+```
+
+然后正常的遵循 `cjs` 规范，也用到了缓存，在控制台通过 `-r` 进行重新下载缓存
+
+```bash
+                  -r, --reload=<CACHE_BLACKLIST>
+                        Reload source code cache (recompile TypeScript)
+                      --reload
+                        Reload everything
+                      --reload=https://deno.land/std
+                        Reload all standard modules
+                      --reload=https://deno.land/std/fs/utils.ts,https://deno.land/std/fmt/colors.ts
+                        Reloads specific modules
+```
+
+其他的调用顺序：`Module` --> `ModuleSpecifier`，懒得写了，自己去读，一个``
+
+`ModuleSpecifier` 实际是一个带了 `Url` 的Class（至少我这么理解Rust里的struct的（逃）
+
+```rs
+pub struct ModuleSpecifier(Url);
+```
