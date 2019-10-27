@@ -502,6 +502,8 @@ pub fn call(
 }
 ```
 
+![](register_op.png)
+
 回到正题，我们来看 Module Loader 部分
 
 试着写一个错误代码然后看一下栈信息
