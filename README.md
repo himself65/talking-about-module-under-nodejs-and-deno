@@ -463,7 +463,7 @@ const buf = core.dispatch(opId, argsUi8, zeroCopy);
 但是，在 `deno` 中，各种 `native` 方法都绑定到了 `deno.isolate` 中
 
 ```rust
-// core/core/isolate.rs
+// core/isolate.rs
 /// Defines the how Deno.core.dispatch() acts.
 /// Called whenever Deno.core.dispatch() is called in JavaScript. zero_copy_buf
 /// corresponds to the second argument of Deno.core.dispatch().
@@ -478,7 +478,7 @@ where
 ```
 
 ```rust
-// core/core/ops.rs
+// core/ops.rs
 /// This function returns None only if op with given id doesn't exist in registry.
 pub fn call(
   &self,
@@ -502,7 +502,7 @@ pub fn call(
 }
 ```
 
-![](register_op.png)
+![cli/worker.ts](register_op.png)
 
 回到正题，我们来看 Module Loader 部分
 
@@ -559,3 +559,9 @@ export async function fetch(
 ```rs
 pub struct ModuleSpecifier(Url);
 ```
+
+从个人粗略的阅读来看，就是套了个 `sandbox` 的 `Node.js` （因为好多地方实在是太像了
+
+有兴趣的可以阅读 `core` 文件夹下的所有代码
+
+去玩巫师3了（逃
