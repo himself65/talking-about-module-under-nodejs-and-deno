@@ -554,7 +554,7 @@ export async function fetch(
 
 其他的调用顺序：`Module` --> `ModuleSpecifier`，懒得写了，自己去读，一个``
 
-`ModuleSpecifier` 实际是一个带了 `Url` 的Class（至少我这么理解Rust里的struct的（逃）
+`ModuleSpecifier` 实际是一个带了 `Url` 的 new type pattern
 
 ```rs
 pub struct ModuleSpecifier(Url);
